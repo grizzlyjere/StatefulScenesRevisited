@@ -15,7 +15,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .comparison import EntityState, compare_scene
 from .const import (
-    CONF_SCENE_SCOPE, CONF_SCENE_TAG, DEFAULT_TOLERANCE, DOMAIN, SCOPE_ALL, SCOPE_TAG, STORAGE_VERSION,
+    CONF_SCENE_SCOPE, CONF_SCENE_TAG, DEFAULT_IGNORED_ATTRIBUTES, DEFAULT_TOLERANCE, DOMAIN, SCOPE_ALL, SCOPE_TAG, STORAGE_VERSION,
 )
 
 
@@ -27,6 +27,7 @@ class SceneDefinition:
     states: dict[str, EntityState] | None
     area_id: str | None = None
     area_name: str | None = None
+    members: tuple[str, ...] = ()
 
 
 class SceneManager:
@@ -35,7 +36,10 @@ class SceneManager:
         self.config = config or {}
         self.scenes: dict[str, SceneDefinition] = {}
         self.available_scenes: dict[str, SceneDefinition] = {}
-        self.settings: dict[str, Any] = {"brightness_tolerance": DEFAULT_TOLERANCE, "scenes": {}}
+        self.settings: dict[str, Any] = {
+            "brightness_tolerance": DEFAULT_TOLERANCE,
+            "ignored_attributes": list(DEFAULT_IGNORED_ATTRIBUTES), "scenes": {},
+        }
         self._store = Store(hass, STORAGE_VERSION, DOMAIN)
         self._listeners: set[Callable[[], None]] = set()
         self._unsubs: list[Callable[[], None]] = []
@@ -45,7 +49,7 @@ class SceneManager:
 
     async def async_start(self) -> None:
         if saved := await self._store.async_load():
-            self.settings = saved
+            self.settings.update(saved)
         self._unsubs = [
             self.hass.bus.async_listen(EVENT_STATE_CHANGED, self._state_changed),
             self.hass.bus.async_listen(EVENT_SCENE_RELOADED, self._schedule_discovery),
@@ -113,6 +117,7 @@ class SceneManager:
             found[key] = SceneDefinition(
                 key, state.entity_id, state.attributes.get("friendly_name", state.entity_id), states,
                 area.id if area else None, area.name if area else None,
+                tuple(states) if states is not None else tuple(state.attributes.get("entity_id", [])),
             )
         self.available_scenes = found
         tag = self.config.get(CONF_SCENE_TAG)
@@ -121,7 +126,7 @@ class SceneManager:
             if self.config.get(CONF_SCENE_SCOPE) != SCOPE_TAG
             or ((entry := registry.async_get(scene.entity_id)) and tag in entry.labels)
         }
-        self._members = {entity_id for scene in found.values() for entity_id in (scene.states or {})}
+        self._members = {entity_id for scene in found.values() for entity_id in scene.members}
         self.notify()
 
     def options(self, key: str) -> dict[str, Any]:
@@ -139,13 +144,22 @@ class SceneManager:
         options = self.options(key)
         supported = bool(scene.states)
         current = {}
-        for entity_id in scene.states or {}:
+        for entity_id in scene.members:
             if state := self.hass.states.get(entity_id):
                 current[entity_id] = EntityState(state.state, state.attributes)
-        differences = compare_scene(
+        comparison = compare_scene(
             scene.states or {}, current, options["brightness_tolerance"],
-            options["ignore_attributes"], tuple(options["ignored_attributes"]),
+            options["ignore_attributes"], tuple(self.settings["ignored_attributes"] + options["ignored_attributes"]),
+            include_matches=True,
         )
+        differences = [row for row in comparison if row["reason"] not in ("match", "ignored")]
+        if not supported:
+            comparison = [
+                {"entity_id": entity_id, "field": "state", "expected": None,
+                 "actual": current[entity_id].state if entity_id in current else None,
+                 "reason": "target_unavailable"}
+                for entity_id in scene.members
+            ]
         return {
             "key": key, "entity_id": scene.entity_id, "name": scene.name,
             "area_id": scene.area_id, "area_name": scene.area_name,
@@ -153,8 +167,9 @@ class SceneManager:
                 "switch", DOMAIN, f"{DOMAIN}:{key}",
             ) if key in self.scenes else None,
             "monitored": key in self.scenes, "supported": supported, "matches": supported and not differences,
-            "issue": None if supported else "This scene does not expose a non-empty target definition.",
-            "differences": differences, "entity_count": len(scene.states or {}),
+            "issue": None if supported else "This scene does not expose target states. Listed members cannot be compared; the switch remains unavailable.",
+            "differences": differences, "comparison": comparison,
+            "entity_count": len(scene.members),
             "attributes": sorted({a for s in (scene.states or {}).values() for a in s.attributes}),
             "options": options,
         }
@@ -162,6 +177,7 @@ class SceneManager:
     def snapshot(self) -> dict[str, Any]:
         return {
             "brightness_tolerance": self.settings["brightness_tolerance"],
+            "ignored_attributes": list(self.settings["ignored_attributes"]),
             "scene_scope": self.config.get(CONF_SCENE_SCOPE, SCOPE_ALL),
             "scene_tag": self.config.get(CONF_SCENE_TAG),
             "tags": [{"id": label.label_id, "name": label.name} for label in sorted(
@@ -182,7 +198,9 @@ class SceneManager:
                     for field in ("brightness_tolerance", "ignore_attributes", "ignored_attributes")
                 }
             else:
-                updated["brightness_tolerance"] = changes["brightness_tolerance"]
+                for field in ("brightness_tolerance", "ignored_attributes"):
+                    if field in changes:
+                        updated[field] = changes[field]
             await self._store.async_save(updated)
             self.settings = updated
             self.notify()

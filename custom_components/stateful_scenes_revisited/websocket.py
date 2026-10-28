@@ -47,8 +47,25 @@ def subscribe(hass, connection, msg):
 
 
 @websocket_api.websocket_command({
+    "type": f"{DOMAIN}/comparison",
+    vol.Required("scene_key"): str,
+})
+@websocket_api.require_admin
+@callback
+def comparison(hass, connection, msg):
+    """Return fresh details independently of the live scene list subscription."""
+    if (manager := _manager(hass, connection, msg)) is None:
+        return
+    if msg["scene_key"] not in manager.available_scenes:
+        connection.send_error(msg["id"], "not_found", "Scene no longer exists")
+        return
+    connection.send_result(msg["id"], manager.result(msg["scene_key"]))
+
+
+@websocket_api.websocket_command({
     "type": f"{DOMAIN}/settings",
-    vol.Required("brightness_tolerance"): tolerance,
+    vol.Optional("brightness_tolerance"): tolerance,
+    vol.Optional("ignored_attributes"): [str],
 })
 @websocket_api.require_admin
 @websocket_api.async_response
@@ -119,5 +136,5 @@ async def scene_settings(hass, connection, msg):
 
 @callback
 def async_register_commands(hass):
-    for command in (subscribe, settings, scope, scene_settings):
+    for command in (subscribe, comparison, settings, scope, scene_settings):
         websocket_api.async_register_command(hass, command)

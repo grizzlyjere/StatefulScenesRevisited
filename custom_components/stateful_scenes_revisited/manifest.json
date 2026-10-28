@@ -1,7 +1,7 @@
 {
   "domain": "stateful_scenes_revisited",
   "name": "Stateful Scenes Revisited",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "config_flow": true,
   "dependencies": ["scene", "frontend", "http", "websocket_api", "panel_custom"],
   "integration_type": "helper",

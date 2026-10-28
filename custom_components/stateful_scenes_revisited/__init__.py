@@ -1,5 +1,6 @@
 """Stateful scene switches and comparison panel."""
 
+from hashlib import sha256
 from pathlib import Path
 
 from homeassistant.components import frontend as ha_frontend, panel_custom
@@ -30,10 +31,11 @@ async def async_setup_entry(hass, entry):
     hass.data[DOMAIN][entry.entry_id] = manager
     try:
         await hass.config_entries.async_forward_entry_setups(entry, [Platform.SWITCH])
+        panel_revision = sha256((Path(__file__).parent / "frontend" / "panel.js").read_bytes()).hexdigest()[:12]
         await panel_custom.async_register_panel(
             hass, frontend_url_path=PANEL_PATH, webcomponent_name="stateful-scenes-revisited-panel",
             sidebar_title="Stateful Scenes Revisited", sidebar_icon="mdi:palette",
-            module_url="/stateful_scenes_revisited/panel.js?v=0.1.0-scene-sidebar", require_admin=True,
+            module_url=f"/stateful_scenes_revisited/panel.js?v={panel_revision}", require_admin=True,
         )
         entry.async_on_unload(entry.add_update_listener(async_update_options))
         manager.notify()

@@ -1,0 +1,38 @@
+id: '1793126811600'
+name: Charlotte Reading
+entities:
+  light.0x0017880102f831b6:
+    effect_list: [blink, breathe, okay, channel_change, candle, sunset, sunrise, sparkle, opal, glisten, underwater, cosmos, sunbeam, enchant, none, finish_effect, stop_effect, stop_hue_effect]
+    supported_color_modes: [brightness]
+    effect: null
+    color_mode: brightness
+    brightness: 51
+    friendly_name: Charlotte Nightstand
+    supported_features: 44
+    state: 'on'
+  light.charlotte_ceiling_light:
+    supported_color_modes: [brightness]
+    color_mode: null
+    brightness: null
+    friendly_name: Charlotte Ceiling Light
+    supported_features: 0
+    state: 'off'
+  light.charlotte_ceiling_lights:
+    effect_list: null
+    supported_color_modes: [brightness]
+    effect: null
+    color_mode: null
+    brightness: null
+    entity_id: [light.charlotte_ceiling_fan_white_light, light.charlotte_ceiling_fan_yellow_light]
+    friendly_name: Charlotte Ceiling Lights
+    supported_features: 4
+    state: 'off'
+  switch.tapo_power_strip_c908_smart_plug_1:
+    friendly_name: Cloud - Wall
+    state: 'on'
+metadata:
+  light.0x0017880102f831b6: {entity_only: true}
+  light.charlotte_ceiling_light: {entity_only: true}
+  light.charlotte_ceiling_lights: {entity_only: true}
+  switch.tapo_power_strip_c908_smart_plug_1: {entity_only: true}
+icon: mdi:book

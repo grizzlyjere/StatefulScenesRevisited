@@ -1,6 +1,8 @@
+99.9% Vibe coded...But it seems to work
+
 # Stateful Scenes Revisited
 
-A custom Home Assistant integration that gives scenes observable on/off state, native switch entities, and a live comparison panel.
+A custom Home Assistant integration that gives scenes observable on/off state, native switch entities, and a live comparison panel.  It's based on the same idea as the Stateful Scenes added on, but shares no code.  I created this because I ran into problems with Stateful Scenes not correctly reflecting the state of the scene and laking any practical way to see why.  I also didn't like that each scene had multiple entities for config.  Helpful to be able to tweak everything via a script or automation, but adds a lot when trying to sift through entities.
 
 This is installed under `custom_components`, rather than in the Supervisor add-on store. An integration runs inside Home Assistant and can access scene target definitions and create native entities without a separate container, MQTT broker, or access token. No cloud service or frontend build is required.
 
@@ -44,7 +46,11 @@ For a target of 100 and tolerance of 3, values from 93 through 107 match. The to
 
 ## Attribute exclusions and differences
 
-The sidebar panel has two page-level tabs: **Scene Config** and **Global Config**. Scene Config opens first and contains a left navigation listing available scenes with compact search and filter controls. Selecting a scene shows its details on the right, including its **Configuration** and **Compare/Debug** tabs for settings, live differences, and scene activation. Global Config contains the default brightness tolerance. Each tab group supports arrow keys, Home, and End independently. Switching page or scene-feature tabs preserves the selected scene, active scene-feature tab, and in-progress form edits. The differences table shows the entity, field, target value, and observed value, and updates as relevant entities change.
+The sidebar panel has two page-level tabs: **Scene Config** and **Global Config**. Scene Config opens first and contains a left navigation listing available scenes with compact search and filter controls. Selecting a scene shows its details on the right, including its **Compare/Debug** (selected first) and **Configuration** tabs for settings, live differences, and scene activation. Global Config contains the default brightness tolerance. Each tab group supports arrow keys, Home, and End independently. Switching page or scene-feature tabs preserves the selected scene, active scene-feature tab, and in-progress form edits. The differences table shows the entity, field, target value, and observed value, and updates as relevant entities change.
+
+Opening Compare/Debug requests fresh comparison details from the server. Missing details and request failures show an explicit message. The panel asset URL includes a fingerprint of its contents so updates request the current JavaScript.
+
+Compare/Debug displays the selected scene entity ID and every compared member state and attribute, including matching values. Matching rows are green and nonmatching rows are red. The Result column identifies mismatches that keep the switch off. Ignored rows keep a neutral background. Ignored restorable attributes are shown with an explanatory result and do not block matching. Attributes that activation does not restore are omitted. Missing or unavailable entities retain their target attribute rows. Targets come from Home Assistant's loaded scene definition; if membership differs from the scene editor, reload scenes after saving the definition.
 
 The scene navigation supports case-insensitive name search, **Only monitored scenes** (enabled by default, using the configured all-scenes or label scope), and an **Area** filter. Turn off **Only monitored scenes** to browse other discovered scenes without adding them to monitoring. Combine the filters to narrow the list; the count shows how many scenes remain. Areas use the scene entity's assigned Home Assistant area, falling back to its device's area. Choose **No area** for unassigned scenes. Filters affect only the scene list and do not change scene scope or switch creation.
 
@@ -54,11 +60,13 @@ For each scene you can:
 - Uncheck attributes in the **Attributes to compare** list to ignore them, then save the scene settings. Checked attributes are compared; unchecked attributes are ignored for all members of that scene. Saved exclusions remain unchecked when you return to the scene. **Ignore all attributes** disables the list while preserving the individual choices.
 - Save a brightness tolerance override.
 
-Attributes in the scene are otherwise compared literally, even when the scene sets a light to `off`. Some devices retain stale brightness/color or expose volatile snapshot attributes such as `friendly_name`. Exclude those attributes if they should not determine whether the scene matches.
+In **Global Config → Global attribute ignore list**, edit attributes to ignore for every scene. The initial list includes `supported_color_modes`, `effect_list`, and `supported_features`, including on existing installations. Enter one name per line or separate names with commas, then save. Clear the field and save to remove all global exclusions. Global and per-scene exclusions apply together; checking a scene attribute cannot override a global exclusion. Ignored restorable fields remain visible in Compare/Debug. Home Assistant snapshot metadata and non-restorable fields are omitted even when included in the ignore list.
+
+Snapshot metadata (`friendly_name`, `supported_features`, `icon`, and group `entity_id`) does not determine a match. For lights, comparison follows the values Home Assistant restores: off targets compare state only; null values and capability metadata are informational; on targets compare brightness, effect, color mode, and the color representation selected by that mode. Other entity attributes continue to compare literally unless excluded. Compare/Debug omits these informational values.
 
 ## Supported scenes and limits
 
-Scenes created through Home Assistant's scene editor, YAML scenes, and runtime `scene.create` snapshots expose target definitions and are supported. Scenes exposed by third-party integrations may be opaque: Home Assistant knows how to activate them but cannot inspect their targets. These scenes still get a switch, but it is unavailable, and the panel explains why comparison is unavailable. They can still be activated from the panel. Empty definitions are also unavailable rather than treated as a match.
+Scenes created through Home Assistant's scene editor, YAML scenes, and runtime `scene.create` snapshots expose target definitions and are supported. Scenes exposed by third-party integrations may be opaque: Home Assistant knows how to activate them but cannot inspect their targets. These scenes still get a switch, but it is unavailable, and the panel explains why comparison is unavailable. When membership is exposed, the panel lists those entities and their current states with **Target unavailable** instead of inventing target states. They can still be activated from the panel. Empty definitions are also unavailable rather than treated as a match.
 
 The scene definition adapter in `manager.py` uses Home Assistant's internal `homeassistant_scene` platform and `scene_config.states`, because the scene entity state only exposes membership, not the desired member states. This API may require updates after Home Assistant upgrades. No scene files are parsed or modified.
 
@@ -90,6 +98,6 @@ Package for manual installation:
 python3 scripts/package.py
 ```
 
-Extract `dist/stateful-scenes-revisited-0.1.0.zip` into `/config` so that the resulting directory is `/config/custom_components/stateful_scenes_revisited`.
+Extract `dist/stateful-scenes-revisited-0.1.1.zip` into `/config` so that the resulting directory is `/config/custom_components/stateful_scenes_revisited`.
 
 Architecture reference: [Home Assistant integrations](https://contributors.home-assistant.io/core/integrations/), [scene implementation in Core 2026.10.0](https://github.com/home-assistant/core/blob/2026.10.0/homeassistant/components/homeassistant/scene.py), and [custom frontend panels](https://www.home-assistant.io/integrations/panel_custom/).

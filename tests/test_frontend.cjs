@@ -10,7 +10,7 @@ vm.runInNewContext(readFileSync('custom_components/stateful_scenes_revisited/fro
   navigator: { clipboard },
   HTMLElement: class {},
   customElements: { get: () => undefined, define: (_, component) => { Panel = component; } },
-  document: { createElement: () => ({
+  document: { createTextNode: text => ({ textContent: text }), createElement: () => ({
     dataset: {}, children: [], attributes: {},
     append(...children) { this.children.push(...children); },
     setAttribute(name, value) { this.attributes[name] = value; },
@@ -24,6 +24,7 @@ function panel(callWS) {
   instance.$ = id => {
     if (!fields.has(id)) fields.set(id, {
       value: '', children: [], replaceChildren(...children) { this.children = children; },
+      append(...children) { this.children.push(...children); },
       querySelectorAll() { return []; },
     });
     return fields.get(id);
@@ -38,6 +39,41 @@ function panel(callWS) {
 function choices(instance) {
   return instance.$('tag').children.map(option => [option.value, option.textContent]);
 }
+
+test('global ignore list parses names and preserves drafts across live updates', () => {
+  const instance = panel(async () => {});
+  instance.data.ignored_attributes = ['supported_color_modes', 'effect_list', 'supported_features'];
+  instance.render();
+  assert.equal(instance.$('global-attributes').value, 'supported_color_modes\neffect_list\nsupported_features');
+  instance.$('global-attributes').value = ' effect_list, custom_mode\n\neffect_list, brightness ';
+  instance.render();
+  assert.deepEqual(Array.from(instance.globalIgnoredAttributes()), ['effect_list', 'custom_mode', 'brightness']);
+  instance.data.ignored_attributes = ['custom_mode'];
+  instance.render();
+  assert.equal(instance.$('global-attributes').value, 'custom_mode');
+  instance.$('global-attributes').value = ' \n, ';
+  assert.deepEqual(Array.from(instance.globalIgnoredAttributes()), []);
+});
+
+test('scene choices identify global exclusions without losing local drafts', () => {
+  const instance = panel(async () => {});
+  instance.data.scenes = [{
+    key: 'desk', entity_id: 'scene.desk', name: 'Desk', monitored: true,
+    attributes: ['effect_list'], comparison: [], differences: [],
+    options: { brightness_tolerance: 3, ignored_attributes: [] },
+  }];
+  instance.data.ignored_attributes = ['effect_list'];
+  instance.render();
+  let label = instance.$('attributes').children[0];
+  assert.equal(label.children[1].textContent, 'effect_list (ignored globally)');
+  label.children[0].checked = false;
+  instance.$('attributes').querySelectorAll = () => [label.children[0]];
+  instance.data.ignored_attributes = [];
+  instance.render();
+  label = instance.$('attributes').children[0];
+  assert.equal(label.children[1].textContent, 'effect_list');
+  assert.equal(label.children[0].checked, false);
+});
 
 test('loads existing Home Assistant labels even when scene snapshot has no tags', async () => {
   const instance = panel(async message => {
@@ -183,4 +219,91 @@ test('scene navigation selects details, preserves live drafts, and combines filt
   instance.render();
   assert.equal(instance.selected, 'Reading');
   assert.equal(instance.$('scene-list-empty').hidden, true);
+});
+
+test('comparison shows every compared entity and identifies the selected scene', () => {
+  const instance = panel();
+  const comparison = [
+    { entity_id: 'light.charlotte_reading', field: 'state', expected: 'on', actual: 'on', reason: 'match' },
+    { entity_id: 'fan.charlotte_ceiling_fan', field: 'percentage', expected: 50, actual: 75, reason: 'different' },
+  ];
+  instance.data.scenes = [{
+    key: 'charlotte', entity_id: 'scene.charlotte_reading', name: 'Charlotte Reading',
+    monitored: true, supported: true, matches: false, entity_count: 2,
+    comparison, differences: comparison.slice(1), attributes: [],
+    options: { brightness_tolerance: 3, ignored_attributes: [] },
+  }];
+  instance.render();
+  assert.equal(instance.$('scene-entity').textContent, 'scene.charlotte_reading');
+  assert.deepEqual(instance.$('diff').children.map(row => row.children.map(cell => cell.textContent)), [
+    ['light.charlotte_reading / state', 'on', 'on', 'Matches'],
+    ['fan.charlotte_ceiling_fan / percentage', '50', '75', 'Does not match'],
+  ]);
+  instance.data.scenes = [];
+  instance.render();
+  assert.equal(instance.$('scene-entity').textContent, '');
+  assert.equal(instance.$('diff').children.length, 0);
+});
+
+test('debug explains ignored attributes, unavailable targets and empty definitions', () => {
+  const instance = panel();
+  const comparison = [
+    { entity_id: 'light.desk', field: 'brightness', expected: 51, actual: 60, reason: 'ignored' },
+    { entity_id: 'switch.vendor', field: 'state', expected: null, actual: 'on', reason: 'target_unavailable' },
+  ];
+  instance.data.scenes = [{
+    key: 'desk', entity_id: 'scene.desk', name: 'Desk', monitored: true,
+    supported: false, matches: false, issue: 'Target definition unavailable.', entity_count: 2,
+    comparison, differences: [], attributes: [],
+    options: { brightness_tolerance: 3, ignored_attributes: [] },
+  }];
+  instance.render();
+  assert.deepEqual(instance.$('diff').children.map(row => row.children[3].textContent),
+    ['Ignored', 'Cannot compare']);
+  assert.equal(instance.$('diff').children[1].children[1].textContent, 'Target unavailable');
+  instance.data.scenes[0].comparison = [];
+  instance.render();
+  assert.equal(instance.$('diff').children[0].children[0].textContent, 'Target definition unavailable.');
+});
+
+test('fresh detail request restores rows when the matching scene list has no comparisons', async () => {
+  const scene = {
+    key: 'charlotte', entity_id: 'scene.charlotte_reading', name: 'Charlotte Reading',
+    monitored: true, supported: true, matches: true, entity_count: 4,
+    differences: [], attributes: [], options: { brightness_tolerance: 3, ignored_attributes: [] },
+  };
+  const members = ['light.nightstand', 'light.ceiling', 'light.ceiling_group', 'switch.wall'];
+  const instance = panel(async message => {
+    assert.equal(message.type, 'stateful_scenes_revisited/comparison');
+    assert.equal(message.scene_key, 'charlotte');
+    return { ...scene, comparison: members.map(entity_id => ({ entity_id, field: 'state', expected: 'on', actual: 'on', reason: 'match' })) };
+  });
+  instance.data.scenes = [scene];
+  instance.render();
+  assert.match(instance.$('diff').children[0].children[0].textContent, /details missing for 4 entities/);
+  instance.$('tolerance').value = '12';
+  await instance.refreshComparison();
+  assert.equal(instance.$('diff').children.length, 4);
+  assert.deepEqual(instance.$('diff').children.map(row => row.children[0].textContent), members.map(id => `${id} / state`));
+  assert.equal(instance.$('tolerance').value, '12');
+});
+
+test('detail errors are visible and late results cannot replace a different scene', async () => {
+  let resolve;
+  const instance = panel(() => new Promise(done => { resolve = done; }));
+  instance.selected = 'charlotte';
+  instance.data.scenes = [{ key: 'charlotte' }, { key: 'other' }];
+  const pending = instance.refreshComparison();
+  instance.selected = 'other';
+  resolve({ comparison: [] });
+  await pending;
+  assert.equal(instance.data.scenes[0].comparison, undefined);
+  instance.selected = 'charlotte';
+  instance._hass.callWS = async () => { throw new Error('Connection lost'); };
+  await instance.refreshComparison();
+  assert.match(instance.lastNotice.message, /Connection lost/);
+  assert.equal(instance.lastNotice.error, true);
+  instance._hass.callWS = async () => ({ supported: true, entity_count: 4, comparison: [] });
+  await instance.refreshComparison();
+  assert.match(instance.lastNotice.message, /server returned no entity comparisons/);
 });

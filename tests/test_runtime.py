@@ -15,6 +15,71 @@ from custom_components.stateful_scenes_revisited.switch import SceneSwitch
 from custom_components.stateful_scenes_revisited.websocket import tolerance, scene_settings, subscribe
 
 
+async def test_global_attribute_defaults_upgrade_existing_settings(hass):
+    from custom_components.stateful_scenes_revisited.const import DEFAULT_IGNORED_ATTRIBUTES
+
+    manager = SceneManager(hass)
+    saved = {"brightness_tolerance": 7, "scenes": {"existing": {"ignored_attributes": ["effect"]}}}
+    with patch.object(manager._store, "async_load", return_value=saved):
+        await manager.async_start()
+    try:
+        assert manager.snapshot()["ignored_attributes"] == list(DEFAULT_IGNORED_ATTRIBUTES)
+        assert manager.options("existing")["ignored_attributes"] == ["effect"]
+        assert manager.options("existing")["brightness_tolerance"] == 7
+    finally:
+        manager.stop()
+
+
+async def test_global_attribute_exclusions_combine_persist_and_clear(hass):
+    from custom_components.stateful_scenes_revisited.comparison import EntityState
+    from custom_components.stateful_scenes_revisited.websocket import settings
+    from homeassistant.exceptions import Unauthorized
+
+    manager = await setup_scenes(hass)
+    hass.data[DOMAIN] = {"test": manager}
+    key = next(iter(manager.scenes))
+    manager.scenes[key].states["switch.fan"] = EntityState("off", {
+        "supported_color_modes": ["onoff"], "effect_list": ["pulse"],
+        "supported_features": 1, "custom_mode": "quiet",
+    })
+    connection = MagicMock()
+    try:
+        result = manager.result(key)
+        assert [row["field"] for row in result["differences"]] == ["custom_mode"]
+        assert sum(row["reason"] == "ignored" for row in result["comparison"]) == 2
+        await manager.async_save({"scene_key": key, "brightness_tolerance": None,
+                                  "ignore_attributes": False, "ignored_attributes": ["custom_mode"]})
+        assert manager.result(key)["matches"]
+        changed = MagicMock()
+        manager.subscribe(changed)
+        settings(hass, connection, settings._ws_schema({
+            "id": 20, "type": f"{DOMAIN}/settings",
+            "ignored_attributes": ["supported_color_modes", "effect_list", "brightness"],
+        }))
+        await hass.async_block_till_done(wait_background_tasks=True)
+        assert changed.called
+        connection.send_result.assert_called_once_with(20)
+        hass.states.async_set("light.desk", "on", {"brightness": 200})
+        assert manager.result(key)["matches"]
+        await manager.async_save({"brightness_tolerance": 0})
+        assert "brightness" in manager.snapshot()["ignored_attributes"]
+        await manager.async_save({"ignored_attributes": []})
+        assert manager.settings["brightness_tolerance"] == 0
+        assert not manager.result(key)["matches"]
+        reloaded = SceneManager(hass)
+        await reloaded.async_start()
+        try:
+            assert reloaded.snapshot()["ignored_attributes"] == []
+            assert reloaded.options(key)["ignored_attributes"] == ["custom_mode"]
+        finally:
+            reloaded.stop()
+        connection.user.is_admin = False
+        with pytest.raises(Unauthorized):
+            settings(hass, connection, {"id": 21, "ignored_attributes": []})
+    finally:
+        manager.stop()
+
+
 async def setup_scenes(hass):
     assert await async_setup_component(hass, "scene", {"scene": [
         {"id": "desk-scene", "name": "Desk scene", "entities": {
@@ -35,6 +100,8 @@ async def test_real_scenes_live_updates_and_settings_storage(hass):
     try:
         key = next(iter(manager.scenes))
         assert manager.result(key)["matches"]
+        assert {row["entity_id"] for row in manager.result(key)["comparison"]} == {"light.desk", "switch.fan"}
+        assert all(row["reason"] == "match" for row in manager.result(key)["comparison"])
         changed = MagicMock()
         manager.subscribe(changed)
         hass.states.async_set("light.desk", "on", {"brightness": 120})
@@ -250,5 +317,101 @@ async def test_scene_switch_metadata_uses_registry_and_tracks_renames(hass):
         assert manager.snapshot()["scenes"][0]["switch_entity_id"] == "switch.renamed_match"
         manager.scenes = {}
         assert manager.result(key)["switch_entity_id"] is None
+    finally:
+        manager.stop()
+
+
+async def test_charlotte_reading_real_scene_activation_and_full_debug(hass):
+    from pathlib import Path
+    from homeassistant.util.yaml import load_yaml
+
+    definition = load_yaml(str(Path(__file__).parent / "fixtures" / "charlotte_reading.yaml"))
+    assert await async_setup_component(hass, "scene", {"scene": [definition]})
+    await hass.async_block_till_done()
+    for entity_id in definition["entities"]:
+        hass.states.async_set(entity_id, "off" if entity_id != "light.charlotte_ceiling_light" else "on")
+
+    async def turn_on(call):
+        ids = call.data["entity_id"]
+        for entity_id in [ids] if isinstance(ids, str) else ids:
+            attributes = {"brightness": call.data["brightness"], "color_mode": "brightness"} if "brightness" in call.data else {}
+            hass.states.async_set(entity_id, "on", attributes)
+
+    async def turn_off(call):
+        ids = call.data["entity_id"]
+        for entity_id in [ids] if isinstance(ids, str) else ids:
+            hass.states.async_set(entity_id, "off")
+
+    hass.services.async_register("light", "turn_on", turn_on)
+    hass.services.async_register("light", "turn_off", turn_off)
+    hass.services.async_register("switch", "turn_on", turn_on)
+    manager = SceneManager(hass)
+    await manager.async_start()
+    try:
+        key = next(iter(manager.scenes))
+        switch = SceneSwitch(manager, key)
+        switch.hass = hass
+        switch.async_write_ha_state = MagicMock()
+        assert not switch.is_on
+        await switch.async_turn_on()
+        await hass.async_block_till_done()
+        result = manager.result(key)
+        assert result["entity_id"] == "scene.charlotte_reading"
+        assert result["entity_count"] == 4
+        assert {row["entity_id"] for row in result["comparison"]} == set(definition["entities"])
+        assert [(row["entity_id"], row["field"]) for row in result["comparison"]] == [
+            ("light.0x0017880102f831b6", "state"),
+            ("light.0x0017880102f831b6", "color_mode"),
+            ("light.0x0017880102f831b6", "brightness"),
+            ("light.charlotte_ceiling_light", "state"),
+            ("light.charlotte_ceiling_lights", "state"),
+            ("switch.tapo_power_strip_c908_smart_plug_1", "state"),
+        ]
+        assert not result["differences"]
+        assert switch.is_on
+        hass.states.async_set("light.0x0017880102f831b6", "on", {"brightness": 100, "color_mode": "brightness"})
+        assert not switch.is_on
+        assert manager.result(key)["differences"][0]["field"] == "brightness"
+    finally:
+        manager.stop()
+
+
+async def test_opaque_scene_lists_known_members_without_inventing_targets(hass):
+    hass.states.async_set("light.vendor", "on", {"brightness": 51})
+    hass.states.async_set("scene.vendor", "unknown", {"entity_id": ["light.vendor", "switch.missing"]})
+    manager = SceneManager(hass)
+    await manager.async_start()
+    try:
+        result = manager.result(next(iter(manager.scenes)))
+        assert not result["supported"]
+        assert not result["matches"]
+        assert result["entity_count"] == 2
+        assert [row["entity_id"] for row in result["comparison"]] == ["light.vendor", "switch.missing"]
+        assert all(row["reason"] == "target_unavailable" and row["expected"] is None for row in result["comparison"])
+    finally:
+        manager.stop()
+
+
+async def test_fresh_comparison_websocket_returns_matching_members_and_checks_access(hass):
+    import json
+    from homeassistant.exceptions import Unauthorized
+    from custom_components.stateful_scenes_revisited.websocket import comparison
+
+    manager = await setup_scenes(hass)
+    hass.data[DOMAIN] = {"test": manager}
+    connection = MagicMock()
+    key = next(iter(manager.scenes))
+    try:
+        comparison(hass, connection, {"id": 9, "scene_key": key})
+        message_id, result = connection.send_result.call_args.args
+        assert message_id == 9
+        payload = json.loads(json.dumps(result))
+        assert payload["matches"]
+        assert {row["entity_id"] for row in payload["comparison"]} == {"light.desk", "switch.fan"}
+        comparison(hass, connection, {"id": 10, "scene_key": "deleted"})
+        connection.send_error.assert_called_once_with(10, "not_found", "Scene no longer exists")
+        connection.user.is_admin = False
+        with pytest.raises(Unauthorized):
+            comparison(hass, connection, {"id": 11, "scene_key": key})
     finally:
         manager.stop()
