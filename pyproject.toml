@@ -1,0 +1,13 @@
+[project]
+name = "stateful-scenes-revisited"
+version = "0.1.0"
+description = "Scene match switches and live comparisons for Home Assistant"
+requires-python = ">=3.14.2"
+dependencies = []
+
+[dependency-groups]
+dev = ["homeassistant==2026.10.0", "pytest>=9.0,<10", "pytest-asyncio>=1.0,<2"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

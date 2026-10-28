@@ -1,0 +1,47 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Stateful Scenes Revisited",
+        "description": "Choose which scenes get stateful switches. Labels are assigned directly to scene entities.",
+        "data": {
+          "scene_scope": "Enable for"
+        }
+      },
+      "tag": {
+        "title": "Select a scene label",
+        "description": "Select an existing Home Assistant label or type a new name to create one. Assign this label to scene entities in their settings to enable them.",
+        "data": {
+          "scene_tag": "Scene label"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Stateful Scenes Revisited is already configured."
+    },
+    "error": {
+      "empty_tag": "Enter a label name or select an existing label."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Stateful Scenes Revisited",
+        "description": "Choose which scenes get stateful switches. Labels are assigned directly to scene entities.",
+        "data": {
+          "scene_scope": "Enable for"
+        }
+      },
+      "tag": {
+        "title": "Select a scene label",
+        "description": "Select an existing Home Assistant label or type a new name to create one. Assign this label to scene entities in their settings to enable them.",
+        "data": {
+          "scene_tag": "Scene label"
+        }
+      }
+    },
+    "error": {
+      "empty_tag": "Enter a label name or select an existing label."
+    }
+  }
+}

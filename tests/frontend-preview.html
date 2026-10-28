@@ -1,0 +1,44 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Stateful Scenes Revisited · Development preview</title><style>body{margin:0;font-family:system-ui}</style></head><body>
+<stateful-scenes-revisited-panel></stateful-scenes-revisited-panel>
+<script type="module">
+import '../custom_components/stateful_scenes_revisited/frontend/panel.js';
+const panel = document.querySelector('stateful-scenes-revisited-panel');
+let update;
+const data = { brightness_tolerance: 3, scene_scope: "tag", scene_tag: "tracked", tags: [{ id: "tracked", name: "Tracked scenes" }], scenes: [
+  { key: 'evening', entity_id: 'scene.evening', name: 'Evening', switch_entity_id: 'switch.evening_stateful_scenes_revisited', monitored: true, area_id: 'living_room', area_name: 'Living room', supported: true, matches: false, entity_count: 3,
+    attributes: ['brightness', 'color_temp_kelvin'],
+    differences: [{ entity_id:'light.living_room', field:'brightness', expected:90, actual:180, reason:'different' }, { entity_id:'switch.desk', field:'state', expected:'off', actual:'on', reason:'different' }],
+    options:{ brightness_tolerance:3, brightness_tolerance_override:null, ignore_attributes:false, ignored_attributes:[] } },
+  { key: 'reading', entity_id: 'scene.reading', name: 'Reading', monitored: false, area_id: null, area_name: null, supported: true, matches: true, entity_count: 1, attributes:['brightness'], differences:[],
+    options:{ brightness_tolerance:5, brightness_tolerance_override:5, ignore_attributes:false, ignored_attributes:[] } }
+] };
+panel.hass = {
+  states: { "switch.evening_stateful_scenes_revisited": { state: "off" } },
+  connection: { subscribeMessage: async cb => { update = cb; cb(structuredClone(data)); return () => {}; } },
+  callWS: async msg => {
+    if (msg.type === "config/label_registry/list") {
+      return data.tags.map(label => ({ label_id: label.id, name: label.name }));
+    }
+    if (msg.type === "stateful_scenes_revisited/scope") {
+      data.scene_scope = msg.scene_scope;
+      data.scene_tag = msg.scene_tag ?? null;
+      if (msg.new_tag) {
+        const tag = data.tags.find(tag => tag.name.toLowerCase() === msg.new_tag.toLowerCase()) ?? { id: `tag_${data.tags.length}`, name: msg.new_tag };
+        if (!data.tags.includes(tag)) data.tags.push(tag);
+        data.scene_tag = tag.id;
+      }
+      for (const scene of data.scenes) scene.monitored = data.scene_scope === "all" || (scene.key === "evening" && data.scene_tag === "tracked");
+    } else if (msg.scene_key) {
+      const scene = data.scenes.find(s => s.key === msg.scene_key);
+      scene.options = { ...msg, brightness_tolerance_override:msg.brightness_tolerance, brightness_tolerance:msg.brightness_tolerance ?? data.brightness_tolerance };
+    } else data.brightness_tolerance = msg.brightness_tolerance;
+    update(structuredClone(data));
+  },
+  callService: async (domain, service, { entity_id }) => {
+    const scene = data.scenes.find(s => s.entity_id === entity_id);
+    scene.matches = true; scene.differences = [];
+    if (scene.switch_entity_id) panel.hass = { ...panel.hass, states: { ...panel.hass.states, [scene.switch_entity_id]: { state: "on" } } };
+    update(structuredClone(data));
+  }
+};
+</script></body></html>
