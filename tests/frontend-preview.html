@@ -23,6 +23,11 @@ data.scenes[1].comparison = [
   { entity_id:'light.reading', field:'state', expected:'on', actual:'on', reason:'match' },
   { entity_id:'light.reading', field:'brightness', expected:150, actual:150, reason:'match' },
 ];
+data.tags.push({ id: "evening_label", name: "Evening" });
+for (const scene of data.scenes) {
+  scene.can_label = !!scene.switch_entity_id;
+  scene.label_ids = [];
+}
 panel.hass = {
   states: { "switch.evening_stateful_scenes_revisited": { state: "off" } },
   connection: { subscribeMessage: async cb => { update = cb; cb(structuredClone(data)); return () => {}; } },
@@ -33,7 +38,10 @@ panel.hass = {
     if (msg.type === "config/label_registry/list") {
       return data.tags.map(label => ({ label_id: label.id, name: label.name }));
     }
-    if (msg.type === "stateful_scenes_revisited/scope") {
+    if (msg.type === "stateful_scenes_revisited/scene_labels") {
+      const scene = data.scenes.find(scene => scene.key === msg.scene_key);
+      scene.label_ids = [...msg.label_ids];
+    } else if (msg.type === "stateful_scenes_revisited/scope") {
       data.scene_scope = msg.scene_scope;
       data.scene_tag = msg.scene_tag ?? null;
       if (msg.new_tag) {
@@ -41,7 +49,7 @@ panel.hass = {
         if (!data.tags.includes(tag)) data.tags.push(tag);
         data.scene_tag = tag.id;
       }
-      for (const scene of data.scenes) scene.monitored = data.scene_scope === "all" || (scene.key === "evening" && data.scene_tag === "tracked");
+      for (const scene of data.scenes) scene.monitored = data.scene_scope === "all" || scene.key === "evening" && data.scene_tag === "tracked";
     } else if (msg.scene_key) {
       const scene = data.scenes.find(s => s.key === msg.scene_key);
       scene.options = { ...msg, brightness_tolerance_override:msg.brightness_tolerance, brightness_tolerance:msg.brightness_tolerance ?? data.brightness_tolerance };

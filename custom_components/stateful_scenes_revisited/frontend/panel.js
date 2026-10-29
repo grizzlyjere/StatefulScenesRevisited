@@ -24,6 +24,21 @@ class StatefulScenesRevisitedPanel extends HTMLElement {
         button:disabled { opacity:.5; cursor:default; } .menu { margin:0; padding:8px; background:transparent; color:inherit; font-size:24px; }
         small { color:var(--secondary-text-color,#56616c); display:block; margin:6px 0; } .check { display:flex; align-items:center; gap:8px; }
         fieldset { min-width:0; margin:16px 0 0; padding:0; border:0; } legend { padding:0; } .check { overflow-wrap:anywhere; } .check input { flex-shrink:0; } fieldset:disabled { opacity:.6; }
+        #scene-label-form { margin-bottom:28px; }
+        .tag-picker { position:relative; }
+        .tag-input { display:flex; flex-wrap:wrap; gap:6px; align-items:center; padding:8px; border:1px solid var(--divider-color,#bac3cd); border-radius:7px; }
+        .tag-input:focus-within { border-color:var(--primary-color,#176b91); }
+        #label-chips { display:contents; }
+        .label-chip { display:inline-flex; align-items:center; gap:6px; padding:3px 8px; border-radius:5px; background:var(--secondary-background-color,#edf3f6); overflow-wrap:anywhere; max-width:100%; }
+        .label-chip button { padding:0 3px; margin:0; background:transparent; color:inherit; }
+        #label-search { flex:1; min-width:130px; width:auto; padding:4px; border:0; outline-offset:0; }
+        #clear-labels { margin:0; padding:4px 8px; background:transparent; color:var(--primary-color,#176b91); }
+        #label-listbox { position:absolute; top:100%; left:0; right:0; z-index:2; max-height:240px; overflow:auto; padding:4px; margin-top:4px; border:1px solid var(--divider-color,#bac3cd); border-radius:7px; background:var(--card-background-color,white); box-shadow:0 4px 12px #0002; }
+        .label-option { padding:8px 10px; cursor:pointer; border-radius:4px; }
+        .label-option.active { outline:2px solid var(--primary-color,#176b91); outline-offset:-2px; }
+        .label-option[aria-selected=true] { background:var(--secondary-background-color,#edf3f6); }
+        #label-empty { padding:8px; }
+
         #status { font-weight:600; padding:12px; background:var(--secondary-background-color,#edf3f6); border-radius:8px; margin:16px 0; }
         .switch-details { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:-6px 0 20px; }
         .switch-details code { overflow-wrap:anywhere; min-width:0; } .switch-details button { margin:0; padding:6px 10px; }
@@ -94,7 +109,22 @@ class StatefulScenesRevisitedPanel extends HTMLElement {
             </div>
             <div id="configuration" role="tabpanel" aria-labelledby="tab-configuration" tabindex="0" hidden>
               <p id="configuration-empty">Choose a scene to configure its settings.</p>
-              <div id="scene-options" hidden><h2>Scene settings</h2><form id="scene-form">
+              <div id="scene-options" hidden><h2>Switch labels</h2>
+              <form id="scene-label-form">
+                <label for="label-search" id="label-picker-name">Labels</label>
+                <div id="label-picker" class="tag-picker">
+                  <div class="tag-input">
+                    <div id="label-chips"></div>
+                    <input id="label-search" type="text" role="combobox" autocomplete="off" placeholder="Search labels…" aria-autocomplete="list" aria-haspopup="listbox" aria-expanded="false" aria-controls="label-listbox" aria-describedby="scene-label-help">
+                    <button id="clear-labels" type="button">Clear all</button>
+                  </div>
+                  <div id="label-listbox" role="listbox" aria-labelledby="label-picker-name" aria-multiselectable="true" hidden></div>
+                </div>
+                <small id="scene-label-help">Select labels or remove their chips, then save to update the generated switch.</small>
+                <small id="label-status" role="status" aria-live="polite"></small>
+                <button id="save-labels">Save labels</button>
+              </form>
+              <h2>Scene settings</h2><form id="scene-form">
             <label for="tolerance">Brightness tolerance override</label><input id="tolerance" type="number" min="0" max="100" step="any" placeholder="Use global default">
             <small>Leave empty to follow the global default.</small>
             <label class="check"><input id="ignore" type="checkbox">Ignore all attributes (compare entity states only)</label>
@@ -145,6 +175,7 @@ class StatefulScenesRevisitedPanel extends HTMLElement {
           this.$(item.getAttribute("aria-controls")).hidden = !selected;
         }
         if (tab.id === "tab-compare") this.refreshComparison();
+        if (tab.id === "tab-configuration") this.refreshLabels();
       };
       for (const [index, tab] of tabs.entries()) {
         tab.onclick = () => {
@@ -173,6 +204,33 @@ class StatefulScenesRevisitedPanel extends HTMLElement {
     this.$("scope").onchange = () => this.renderScopeFields();
     this.$("tag").onchange = () => this.renderScopeFields();
     this.$("tag").onfocus = () => this.refreshLabels();
+    this.$("label-search").onfocus = () => {
+      this.labelsOpen = true;
+      this.renderSceneLabels();
+      this.refreshLabels();
+    };
+    this.$("label-search").onclick = () => {
+      this.labelsOpen = true;
+      this.renderSceneLabels();
+    };
+    this.labelOutsidePointerDown = event => this.dismissLabelsOutside(event);
+    this.$("label-search").oninput = () => {
+      this.labelsOpen = true;
+      this.activeLabel = -1;
+      this.renderSceneLabels();
+    };
+    this.$("label-search").onkeydown = event => this.labelKeydown(event);
+    this.$("label-picker").onfocusout = event => {
+      if (!this.$("label-picker").contains(event.relatedTarget)) {
+        this.labelsOpen = false;
+        this.renderSceneLabels();
+      }
+    };
+    this.$("clear-labels").onclick = () => this.changeSceneLabels([]);
+    this.$("scene-label-form").onsubmit = event => {
+      event.preventDefault();
+      this.saveSceneLabels();
+    };
     this.$("scope-form").onsubmit = (event) => {
       event.preventDefault();
       const message = { type: "stateful_scenes_revisited/scope", scene_scope: this.$("scope").value };
@@ -216,8 +274,16 @@ class StatefulScenesRevisitedPanel extends HTMLElement {
     if (changed && this.isConnected) this.connect();
     this.renderSwitch();
   }
-  connectedCallback() { if (this._hass) this.connect(); }
-  disconnectedCallback() { this.generation++; this.unsubscribe?.(); this.unsubscribe = null; }
+  connectedCallback() {
+    this.ownerDocument.addEventListener("pointerdown", this.labelOutsidePointerDown, true);
+    if (this._hass) this.connect();
+  }
+  disconnectedCallback() {
+    this.ownerDocument.removeEventListener("pointerdown", this.labelOutsidePointerDown, true);
+    this.generation++;
+    this.unsubscribe?.();
+    this.unsubscribe = null;
+  }
 
   async connect() {
     const generation = ++this.generation;
@@ -290,15 +356,23 @@ class StatefulScenesRevisitedPanel extends HTMLElement {
   async refreshLabels() {
     const generation = this.generation;
     const request = this.labelRequest = (this.labelRequest ?? 0) + 1;
+    this.labelsLoading = true;
+    this.renderSceneLabels();
     try {
       const labels = await this._hass.callWS({ type: "config/label_registry/list" });
       if (generation !== this.generation || request !== this.labelRequest) return;
       this.labels = labels.map(label => ({ id: label.label_id, name: label.name }))
         .sort((a, b) => a.name.localeCompare(b.name));
       this.renderScope();
+      this.renderSceneLabels();
     } catch (err) {
       if (generation !== this.generation || request !== this.labelRequest) return;
       this.notice(`Unable to load labels: ${err.message || err}`, true);
+    } finally {
+      if (generation === this.generation && request === this.labelRequest) {
+        this.labelsLoading = false;
+        this.renderSceneLabels();
+      }
     }
   }
 
@@ -323,6 +397,152 @@ class StatefulScenesRevisitedPanel extends HTMLElement {
     this.$("new-tag-options").hidden = !adding;
     this.$("new-tag").disabled = !adding;
     this.$("new-tag").required = adding;
+  }
+
+  dismissLabelsOutside(event) {
+    // The composed path includes controls inside this panel's shadow root.
+    if (!this.labelsOpen || event.composedPath().includes(this.$("label-picker"))) return;
+    this.labelsOpen = false;
+    this.activeLabel = -1;
+    this.renderSceneLabels();
+  }
+
+  renderSceneLabels() {
+    const scene = this.data.scenes.find(item => item.key === this.selected);
+    const labels = this.labels ?? this.data.tags ?? [];
+    const assigned = scene?.label_ids ?? [];
+    const search = this.$("label-search");
+    if (this.labelSceneKey !== scene?.key || !this.labelsDirty) {
+      if (this.labelSceneKey !== scene?.key) {
+        search.value = "";
+        this.labelsOpen = false;
+        this.activeLabel = -1;
+      }
+      this.labelDraft = [...assigned];
+      this.labelsDirty = false;
+      this.labelSceneKey = scene?.key;
+    }
+    const disabled = !scene?.can_label;
+    const readOnly = !!this.savingLabels;
+    search.disabled = disabled;
+    search.readOnly = readOnly;
+    this.$("clear-labels").disabled = disabled || readOnly || !this.labelDraft.length;
+    this.$("save-labels").disabled = disabled || readOnly || !this.labelsDirty;
+    // Keep chip buttons mounted during live state updates so keyboard focus survives.
+    const chipSignature = JSON.stringify([this.labelDraft, labels, disabled, readOnly]);
+    if (chipSignature !== this.chipSignature) {
+      this.$("label-chips").replaceChildren(...this.labelDraft.map(id => {
+        const name = labels.find(label => label.id === id)?.name ?? id;
+        const chip = document.createElement("span");
+        chip.className = "label-chip";
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.textContent = "×";
+        remove.setAttribute("aria-label", `Remove ${name}`);
+        remove.disabled = disabled || readOnly;
+        remove.onclick = () => this.changeSceneLabels(this.labelDraft.filter(value => value !== id));
+        chip.append(document.createTextNode(name), remove);
+        return chip;
+      }));
+      this.chipSignature = chipSignature;
+    }
+    const query = search.value.trim().toLocaleLowerCase();
+    this.filteredLabels = labels.filter(label => label.name.toLocaleLowerCase().includes(query));
+    if (!(this.activeLabel >= 0 && this.activeLabel < this.filteredLabels.length)) this.activeLabel = -1;
+    const open = !!this.labelsOpen && !disabled && !readOnly;
+    search.setAttribute("aria-expanded", String(open));
+    const listbox = this.$("label-listbox");
+    listbox.hidden = !open;
+    listbox.setAttribute("aria-busy", String(!!this.labelsLoading));
+    const options = this.filteredLabels.map((label, index) => {
+      const option = document.createElement("div");
+      option.id = `scene-label-option-${index}`;
+      option.className = "label-option" + (index === this.activeLabel ? " active" : "");
+      option.setAttribute("role", "option");
+      const selected = this.labelDraft.includes(label.id);
+      option.setAttribute("aria-selected", String(selected));
+      option.textContent = `${selected ? "✓ " : ""}${label.name}`;
+      option.onmousedown = event => event.preventDefault();
+      option.onclick = () => this.toggleSceneLabel(label.id);
+      return option;
+    });
+    if (!options.length) {
+      const empty = document.createElement("div");
+      empty.id = "label-empty";
+      empty.textContent = this.labelsLoading ? "Loading labels…" : labels.length ? "No labels match your search." : "No labels defined in Home Assistant.";
+      options.push(empty);
+    }
+    listbox.replaceChildren(...options);
+    if (open && this.activeLabel >= 0) {
+      search.setAttribute("aria-activedescendant", `scene-label-option-${this.activeLabel}`);
+      listbox.children[this.activeLabel]?.scrollIntoView?.({ block: "nearest" });
+    } else search.removeAttribute("aria-activedescendant");
+    this.$("label-status").textContent = this.labelsLoading ? "Loading labels…"
+      : `${this.labelDraft.length} ${this.labelDraft.length === 1 ? "label" : "labels"} selected${this.labelsDirty ? " · Unsaved changes" : ""}`;
+    this.$("scene-label-help").textContent = scene && !scene.can_label
+      ? "No generated switch is available. Monitor this scene before assigning switch labels."
+      : `Select labels or remove their chips, then save to update ${scene?.switch_entity_id ?? "the generated switch"}.`;
+  }
+
+  changeSceneLabels(values) {
+    const scene = this.data.scenes.find(item => item.key === this.selected);
+    if (!scene?.can_label || this.savingLabels) return;
+    this.labelDraft = [...new Set(values)];
+    this.labelsDirty = JSON.stringify([...this.labelDraft].sort()) !== JSON.stringify([...(scene.label_ids ?? [])].sort());
+    this.renderSceneLabels();
+    this.$("label-search").focus();
+  }
+
+  toggleSceneLabel(id) {
+    this.changeSceneLabels(this.labelDraft.includes(id)
+      ? this.labelDraft.filter(value => value !== id) : [...this.labelDraft, id]);
+  }
+
+  labelKeydown(event) {
+    if (this.savingLabels) return;
+    const count = this.filteredLabels?.length ?? 0;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      this.labelsOpen = true;
+      const active = this.activeLabel ?? -1;
+      this.activeLabel = !count ? -1 : active < 0
+        ? (event.key === "ArrowDown" ? 0 : count - 1)
+        : (active + (event.key === "ArrowDown" ? 1 : -1) + count) % count;
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      if (this.labelsOpen && this.activeLabel >= 0 && count) this.toggleSceneLabel(this.filteredLabels[this.activeLabel].id);
+      else this.labelsOpen = true;
+    } else if (event.key === "Escape" || event.key === "Tab") {
+      if (event.key === "Escape") event.preventDefault();
+      this.labelsOpen = false;
+      this.activeLabel = -1;
+    } else if (event.key === "Backspace" && !this.$("label-search").value && this.labelDraft.length) {
+      event.preventDefault();
+      this.changeSceneLabels(this.labelDraft.slice(0, -1));
+    } else return;
+    this.renderSceneLabels();
+  }
+
+  async saveSceneLabels() {
+    const scene = this.data.scenes.find(item => item.key === this.selected);
+    if (!scene?.can_label || !this.labelsDirty || this.savingLabels) return;
+    const labelIds = [...this.labelDraft];
+    const generation = this.generation;
+    this.savingLabels = true;
+    this.renderSceneLabels();
+    try {
+      await this._hass.callWS({ type: "stateful_scenes_revisited/scene_labels", scene_key: scene.key, label_ids: labelIds });
+      if (generation !== this.generation) return;
+      const current = this.data.scenes.find(item => item.key === scene.key);
+      if (current) current.label_ids = labelIds;
+      if (this.labelSceneKey === scene.key) this.labelsDirty = false;
+      this.notice(`Switch labels saved for ${scene.name}.`);
+    } catch (err) {
+      if (generation === this.generation) this.notice(`Could not save labels: ${err.message || err}`, true);
+    } finally {
+      this.savingLabels = false;
+      this.renderSceneLabels();
+    }
   }
 
   renderScope() {
@@ -423,6 +643,7 @@ class StatefulScenesRevisitedPanel extends HTMLElement {
       this.globalIgnoreSignature = globalIgnoreSignature;
     }
     const scene = scenes.find(s => s.key === this.selected);
+    this.renderSceneLabels();
     this.renderSwitch();
     this.$("scene-options").hidden = !scene;
     this.$("configuration-empty").hidden = !!scene;

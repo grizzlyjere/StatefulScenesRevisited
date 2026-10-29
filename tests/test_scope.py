@@ -186,3 +186,87 @@ async def test_global_panel_scope_rejects_invalid_tags_and_non_admins(hass):
         assert not list(lr.async_get(hass).async_list_labels())
     finally:
         manager.stop()
+
+
+async def test_switch_labels_save_remove_and_clear_without_changing_source_scene(hass):
+    from custom_components.stateful_scenes_revisited.websocket import scene_labels
+
+    manager = await setup_scenes(hass)
+    hass.data[DOMAIN] = {"test": manager}
+    registry = er.async_get(hass)
+    labels = lr.async_get(hass)
+    source = labels.async_create("Source scene")
+    existing = labels.async_create("Existing switch label")
+    extra = labels.async_create("Extra switch label")
+    registry.async_update_entity("scene.desk_scene", labels={source.label_id})
+    manager.config = {"scene_scope": "tag", "scene_tag": source.label_id}
+    manager.discover()
+    key = next(iter(manager.scenes))
+    switch = registry.async_get_or_create("switch", DOMAIN, f"{DOMAIN}:{key}", config_entry=entry_for(hass))
+    switch = registry.async_update_entity(switch.entity_id, new_entity_id="switch.renamed_scene_match", labels={existing.label_id})
+    connection = MagicMock()
+    connection.user.is_admin = True
+    try:
+        result = manager.result(key)
+        assert result["can_label"] is True
+        assert result["label_ids"] == [existing.label_id]
+        assert result["switch_entity_id"] == switch.entity_id
+        selections = ([existing.label_id, extra.label_id], [extra.label_id], [])
+        for request_id, selected in enumerate(selections, 1):
+            scene_labels(hass, connection, {"id": request_id, "scene_key": key, "label_ids": selected})
+            connection.send_result.assert_called_with(request_id)
+            assert registry.async_get(switch.entity_id).labels == set(selected)
+            assert manager.result(key)["label_ids"] == sorted(selected)
+            assert registry.async_get("scene.desk_scene").labels == {source.label_id}
+            assert key in manager.scenes
+        scene_labels(hass, connection, {"id": 4, "scene_key": key, "label_ids": [extra.label_id]})
+        labels.async_delete(extra.label_id)
+        await asyncio.sleep(.3)
+        assert manager.result(key)["label_ids"] == []
+        assert registry.async_get("scene.desk_scene").labels == {source.label_id}
+        assert key in manager.scenes
+        # A stale registry entry must not allow labeling an unmonitored scene.
+        manager.config = {"scene_scope": "tag", "scene_tag": existing.label_id}
+        manager.discover()
+        assert manager.result(key)["can_label"] is False
+        scene_labels(hass, connection, {"id": 5, "scene_key": key, "label_ids": [existing.label_id]})
+        connection.send_error.assert_called_with(5, "not_registered", ANY)
+        assert registry.async_get(switch.entity_id).labels == set()
+    finally:
+        manager.stop()
+
+
+async def test_switch_labels_rejects_invalid_requests_and_missing_switch_without_scene_fallback(hass):
+    import pytest
+    from homeassistant.exceptions import Unauthorized
+    from custom_components.stateful_scenes_revisited.websocket import scene_labels
+
+    manager = await setup_scenes(hass)
+    hass.data[DOMAIN] = {"test": manager}
+    key = next(iter(manager.scenes))
+    registry = er.async_get(hass)
+    valid = lr.async_get(hass).async_create("Valid")
+    registry.async_update_entity("scene.desk_scene", labels={valid.label_id})
+    switch = registry.async_get_or_create("switch", DOMAIN, f"{DOMAIN}:{key}", config_entry=entry_for(hass))
+    registry.async_update_entity(switch.entity_id, labels={valid.label_id})
+    connection = MagicMock()
+    connection.user.is_admin = False
+    message = {"id": 1, "scene_key": key, "label_ids": ["missing"]}
+    try:
+        with pytest.raises(Unauthorized):
+            scene_labels(hass, connection, message)
+        connection.user.is_admin = True
+        scene_labels(hass, connection, message)
+        connection.send_error.assert_called_with(1, "invalid_label", ANY)
+        scene_labels(hass, connection, {**message, "scene_key": "deleted"})
+        connection.send_error.assert_called_with(1, "not_found", ANY)
+        scene_labels(hass, connection, {**message, "label_ids": [valid.label_id, "missing"]})
+        assert registry.async_get(switch.entity_id).labels == {valid.label_id}
+        registry.async_remove(switch.entity_id)
+        assert manager.result(key)["can_label"] is False
+        assert manager.result(key)["label_ids"] == []
+        scene_labels(hass, connection, {**message, "label_ids": []})
+        connection.send_error.assert_called_with(1, "not_registered", ANY)
+        assert registry.async_get("scene.desk_scene").labels == {valid.label_id}
+    finally:
+        manager.stop()

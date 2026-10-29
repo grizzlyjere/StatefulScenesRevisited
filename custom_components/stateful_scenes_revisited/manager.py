@@ -139,8 +139,17 @@ class SceneManager:
             "ignored_attributes": stored.get("ignored_attributes", []),
         }
 
+    def switch_entry(self, key: str) -> er.RegistryEntry | None:
+        """Resolve the generated switch, including any user-renamed entity ID."""
+        if key not in self.scenes:
+            return None
+        registry = er.async_get(self.hass)
+        entity_id = registry.async_get_entity_id("switch", DOMAIN, f"{DOMAIN}:{key}")
+        return registry.async_get(entity_id) if entity_id else None
+
     def result(self, key: str) -> dict[str, Any]:
         scene = self.available_scenes[key]
+        registered = self.switch_entry(key)
         options = self.options(key)
         supported = bool(scene.states)
         current = {}
@@ -163,9 +172,9 @@ class SceneManager:
         return {
             "key": key, "entity_id": scene.entity_id, "name": scene.name,
             "area_id": scene.area_id, "area_name": scene.area_name,
-            "switch_entity_id": er.async_get(self.hass).async_get_entity_id(
-                "switch", DOMAIN, f"{DOMAIN}:{key}",
-            ) if key in self.scenes else None,
+            "label_ids": sorted(registered.labels) if registered else [],
+            "can_label": registered is not None,
+            "switch_entity_id": registered.entity_id if registered else None,
             "monitored": key in self.scenes, "supported": supported, "matches": supported and not differences,
             "issue": None if supported else "This scene does not expose target states. Listed members cannot be compared; the switch remains unavailable.",
             "differences": differences, "comparison": comparison,

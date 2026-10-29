@@ -23,7 +23,9 @@ function panel(callWS) {
   const fields = new Map();
   instance.$ = id => {
     if (!fields.has(id)) fields.set(id, {
-      value: '', children: [], replaceChildren(...children) { this.children = children; },
+      value: '', children: [], attributes: {}, focus() {},
+      setAttribute(name, value) { this.attributes[name] = value; },
+      removeAttribute(name) { delete this.attributes[name]; }, replaceChildren(...children) { this.children = children; },
       append(...children) { this.children.push(...children); },
       querySelectorAll() { return []; },
     });
@@ -306,4 +308,159 @@ test('detail errors are visible and late results cannot replace a different scen
   instance._hass.callWS = async () => ({ supported: true, entity_count: 4, comparison: [] });
   await instance.refreshComparison();
   assert.match(instance.lastNotice.message, /server returned no entity comparisons/);
+});
+
+
+test('tag picker loads chips, searches options, preserves drafts and resets for a new scene', async () => {
+  let labels = [{ label_id: 'evening', name: 'Evening' }, { label_id: 'work', name: 'Work' }];
+  const instance = panel(async () => labels);
+  instance.selected = 'desk';
+  instance.data.scenes = [
+    { key: 'desk', can_label: true, label_ids: ['evening'] },
+    { key: 'other', can_label: true, label_ids: [] },
+  ];
+  await instance.refreshLabels();
+  assert.equal(instance.$('label-chips').children[0].children[0].textContent, 'Evening');
+  instance.$('label-search').value = 'WOR';
+  instance.labelsOpen = true;
+  instance.renderSceneLabels();
+  assert.equal(instance.$('label-listbox').children.length, 1);
+  assert.equal(instance.$('label-listbox').children[0].textContent, 'Work');
+  instance.$('label-listbox').children[0].onclick();
+  assert.deepEqual(Array.from(instance.labelDraft), ['evening', 'work']);
+  labels[1].name = 'Office';
+  await instance.refreshLabels();
+  assert.deepEqual(Array.from(instance.labelDraft), ['evening', 'work']);
+  assert.equal(instance.$('label-chips').children[1].children[0].textContent, 'Office');
+  assert.equal(instance.$('label-listbox').children[0].textContent, 'No labels match your search.');
+  instance.renderSceneLabels();
+  assert.equal(instance.labelsDirty, true);
+  instance.selected = 'other';
+  instance.renderSceneLabels();
+  assert.deepEqual(Array.from(instance.labelDraft), []);
+  assert.equal(instance.$('label-search').value, '');
+  instance.data.scenes[1].can_label = false;
+  instance.renderSceneLabels();
+  assert.equal(instance.$('label-search').disabled, true);
+  assert.match(instance.$('scene-label-help').textContent, /No generated switch/);
+  labels = [];
+  await instance.refreshLabels();
+  assert.equal(instance.$('label-listbox').children[0].textContent, 'No labels defined in Home Assistant.');
+});
+
+test('tag picker supports keyboard navigation, selection, chip removal, clearing, and escape', async () => {
+  const instance = panel();
+  instance.data.tags = [{ id: 'evening', name: 'Evening' }, { id: 'work', name: 'Work' }];
+  instance.data.scenes = [{ key: 'desk', can_label: true, label_ids: [] }];
+  instance.selected = 'desk';
+  instance.renderSceneLabels();
+  const key = key => instance.labelKeydown({ key, preventDefault() {} });
+  key('ArrowDown');
+  assert.equal(instance.$('label-search').attributes['aria-activedescendant'], 'scene-label-option-0');
+  key('Enter');
+  key('ArrowDown');
+  key('Enter');
+  assert.deepEqual(Array.from(instance.labelDraft), ['evening', 'work']);
+  assert.equal(instance.$('label-listbox').children[1].attributes['aria-selected'], 'true');
+  instance.$('label-chips').children[0].children[1].onclick();
+  assert.deepEqual(Array.from(instance.labelDraft), ['work']);
+  key('Backspace');
+  assert.deepEqual(Array.from(instance.labelDraft), []);
+  assert.equal(instance.labelsDirty, false);
+  key('Escape');
+  instance.activeLabel = -1;
+  key('ArrowUp');
+  assert.equal(instance.activeLabel, 1);
+  key('Escape');
+  assert.equal(instance.$('label-search').attributes['aria-expanded'], 'false');
+  assert.equal(instance.$('label-search').attributes['aria-activedescendant'], undefined);
+  instance.changeSceneLabels(['work']);
+  instance.changeSceneLabels([]);
+  assert.equal(instance.$('label-chips').children.length, 0);
+});
+
+test('saving labels persists the complete selection, permits clearing, and preserves failed drafts', async () => {
+  const messages = [];
+  const instance = panel(async message => { messages.push(message); });
+  instance.data.tags = [{ id: 'work', name: 'Work' }, { id: 'existing', name: 'Existing' }];
+  instance.data.scenes = [{ key: 'desk', name: 'Desk', can_label: true, label_ids: ['existing'] }];
+  instance.selected = 'desk';
+  instance.renderSceneLabels();
+  instance.changeSceneLabels(['work', 'existing']);
+  await instance.saveSceneLabels();
+  assert.equal(messages[0].type, 'stateful_scenes_revisited/scene_labels');
+  assert.equal(messages[0].scene_key, 'desk');
+  assert.deepEqual(Array.from(messages[0].label_ids), ['work', 'existing']);
+  assert.equal(instance.$('save-labels').disabled, true);
+  assert.equal(instance.lastNotice.message, 'Switch labels saved for Desk.');
+  instance.changeSceneLabels([]);
+  instance._hass.callWS = async () => { throw new Error('Connection lost'); };
+  await instance.saveSceneLabels();
+  assert.match(instance.lastNotice.message, /Connection lost/);
+  assert.equal(instance.lastNotice.error, true);
+  assert.deepEqual(Array.from(instance.labelDraft), []);
+  assert.deepEqual(Array.from(instance.data.scenes[0].label_ids), ['work', 'existing']);
+  assert.equal(instance.$('save-labels').disabled, false);
+  instance._hass.callWS = async message => { messages.push(message); };
+  await instance.saveSceneLabels();
+  assert.deepEqual(Array.from(messages[1].label_ids), []);
+  assert.deepEqual(Array.from(instance.data.scenes[0].label_ids), []);
+});
+
+test('tag picker is read only during save and ignores a response after disconnect', async () => {
+  let resolve;
+  const instance = panel(() => new Promise(done => { resolve = done; }));
+  instance.data.scenes = [{ key: 'desk', name: 'Desk', can_label: true, label_ids: [] }];
+  instance.selected = 'desk';
+  instance.renderSceneLabels();
+  instance.changeSceneLabels(['work']);
+  const saving = instance.saveSceneLabels();
+  assert.equal(instance.$('label-search').readOnly, true);
+  instance.changeSceneLabels([]);
+  assert.deepEqual(Array.from(instance.labelDraft), ['work']);
+  instance.generation++;
+  resolve();
+  await saving;
+  assert.deepEqual(instance.data.scenes[0].label_ids, []);
+  assert.equal(instance.$('label-search').readOnly, false);
+});
+
+
+test('outside pointer clicks dismiss tag results without changing the selection or search', () => {
+  const instance = panel();
+  instance.selected = 'desk';
+  instance.data.scenes = [{ key: 'desk', can_label: true, label_ids: [] }];
+  instance.data.tags = [{ id: 'work', name: 'Work' }];
+  instance.renderSceneLabels();
+  instance.changeSceneLabels(['work']);
+  instance.$('label-search').value = 'wor';
+  instance.labelsOpen = true;
+  instance.activeLabel = 0;
+  instance.renderSceneLabels();
+  instance.dismissLabelsOutside({ composedPath: () => [instance.$('label-search'), instance.$('label-picker')] });
+  assert.equal(instance.$('label-listbox').hidden, false);
+  instance.dismissLabelsOutside({ composedPath: () => [{}] });
+  assert.equal(instance.$('label-listbox').hidden, true);
+  assert.equal(instance.$('label-search').attributes['aria-expanded'], 'false');
+  assert.equal(instance.$('label-search').attributes['aria-activedescendant'], undefined);
+  assert.equal(instance.$('label-search').value, 'wor');
+  assert.deepEqual(Array.from(instance.labelDraft), ['work']);
+  assert.equal(instance.labelsDirty, true);
+});
+
+test('outside click listener is registered and cleaned up with the panel lifecycle', () => {
+  const instance = panel();
+  const calls = [];
+  instance._hass = null;
+  instance.labelOutsidePointerDown = () => {};
+  instance.ownerDocument = {
+    addEventListener(...args) { calls.push(['add', ...args]); },
+    removeEventListener(...args) { calls.push(['remove', ...args]); },
+  };
+  instance.connectedCallback();
+  instance.disconnectedCallback();
+  assert.deepEqual(calls, [
+    ['add', 'pointerdown', instance.labelOutsidePointerDown, true],
+    ['remove', 'pointerdown', instance.labelOutsidePointerDown, true],
+  ]);
 });

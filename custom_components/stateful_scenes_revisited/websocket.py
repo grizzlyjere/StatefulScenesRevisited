@@ -6,7 +6,7 @@ import probatio as vol
 
 from homeassistant.components import websocket_api
 from homeassistant.core import callback
-from homeassistant.helpers import label_registry as lr
+from homeassistant.helpers import entity_registry as er, label_registry as lr
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from .const import CONF_SCENE_SCOPE, CONF_SCENE_TAG, DOMAIN, SCOPE_ALL, SCOPE_TAG
@@ -134,7 +134,37 @@ async def scene_settings(hass, connection, msg):
     connection.send_result(msg["id"])
 
 
+@websocket_api.websocket_command({
+    "type": f"{DOMAIN}/scene_labels",
+    vol.Required("scene_key"): str,
+    vol.Required("label_ids"): [str],
+})
+@websocket_api.require_admin
+@callback
+def scene_labels(hass, connection, msg):
+    """Save labels on the generated switch after validating every label."""
+    if (manager := _manager(hass, connection, msg)) is None:
+        return
+    scene = manager.available_scenes.get(msg["scene_key"])
+    if scene is None:
+        connection.send_error(msg["id"], "not_found", "Scene no longer exists")
+        return
+    registry = er.async_get(hass)
+    entry = manager.switch_entry(msg["scene_key"])
+    if entry is None:
+        connection.send_error(msg["id"], "not_registered", "The generated switch is unavailable. Monitor this scene before assigning switch labels.")
+        return
+    labels = set(msg["label_ids"])
+    label_registry = lr.async_get(hass)
+    if any(label_registry.async_get_label(label_id) is None for label_id in labels):
+        connection.send_error(msg["id"], "invalid_label", "A selected label no longer exists. Refresh the labels and try again.")
+        return
+    registry.async_update_entity(entry.entity_id, labels=labels)
+    manager.discover()
+    connection.send_result(msg["id"])
+
+
 @callback
 def async_register_commands(hass):
-    for command in (subscribe, comparison, settings, scope, scene_settings):
+    for command in (subscribe, comparison, settings, scope, scene_settings, scene_labels):
         websocket_api.async_register_command(hass, command)
